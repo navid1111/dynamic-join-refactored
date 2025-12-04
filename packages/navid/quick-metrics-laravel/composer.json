@@ -1,0 +1,30 @@
+{
+    "name": "navid/quick-matrics-laravel",
+    "description": "Laravel wrapper for QuickMatrics API",
+    "type": "library",
+    "license": "MIT",
+    "autoload": {
+        "psr-4": {
+            "Navid\\QuickMatricsLaravel\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "navid1111",
+            "email": "navidkamal@iut-dhaka.edu"
+        }
+    ],
+    "minimum-stability": "dev",
+    "require": {
+        "php": "^8.2",
+        "illuminate/support": "^12.0",
+        "guzzlehttp/guzzle": "^7.0"
+    },
+    "extra": {
+        "laravel": {
+            "providers": [
+                "Navid\\QuickMatricsLaravel\\QuickMetricsServiceProvider"
+            ]
+        }
+    }
+}

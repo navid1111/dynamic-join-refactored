@@ -1,0 +1,34 @@
+# Ignore vendor and node_modules in package
+/vendor/
+/node_modules/
+
+# Ignore config files
+.env
+.env.*
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Composer
+composer.lock
+
+# NPM
+package-lock.json
+yarn.lock
+
+# Misc
+*.log
+*.tmp
+
+# PHPUnit
+coverage/
+
+# Symlinks
+packages/*/vendor/
