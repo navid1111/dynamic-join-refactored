@@ -4,88 +4,192 @@ namespace App\Services;
 
 class ReportQueryBuilder
 {
+    private array $tables = [];
+
+    private array $joins = [];
+
+    private array $columnAliases = [];
+
+    private array $duplicateColumns = [];
+
+    private array $tableAliasMap = [];
+
+    /**
+     * Build SQL query from report configuration
+     */
     public function build(array $reportConfig): string
     {
-        $tables = $reportConfig['tables'];
-        $joins = $reportConfig['joins'] ?? [];
-        $selectColumns = [];
-        $emptyMap = [];
-        $aliasofTables = [];
-        $tableNames = [];
-        $currentItr = 0;
+        $this->reset();
+        $this->parseConfiguration($reportConfig);
 
-        // Detect duplicate keys across all tables
-        $duplicateKeys = $this->duplicateKeys($reportConfig);
-
-        // Build SELECT clause and aliases (matching original logic)
-        foreach ($tables as $tableDef) {
-            foreach ($tableDef as $tablename => $columns) {
-                $tableNames[] = $tablename;
-                if (isset($emptyMap[$tablename])) {
-                    $emptyMap[$tablename]['count']++;
-                } else {
-                    $emptyMap[$tablename]['count'] = 1;
-                }
-                $tempAlias = '';
-                for ($i = 0; $i < $emptyMap[$tablename]['count']; $i++) {
-                    $tempAlias .= $tablename;
-                }
-                $aliasofTables[] = $tempAlias;
-
-                // Use alias for column naming when table appears multiple times
-                $columnPrefix = $tempAlias;
-
-                foreach ($columns as $column) {
-                    // Track columns per alias, not per table name
-                    $trackKey = $tempAlias.'_'.$column;
-                    if (isset($emptyMap[$trackKey])) {
-                        $emptyMap[$trackKey]++;
-                    } else {
-                        $selectColumns[] = in_array($column, $duplicateKeys)
-                            ? "{$columnPrefix}.$column as {$columnPrefix}_{$column}"
-                            : "$tablename.$column";
-                        $emptyMap[$trackKey] = 1;
-                    }
-                }
-            }
-            $currentItr++;
-        }
-
-        // Build JOIN clauses (matching original logic)
-        $selectColumns = implode(', ', $selectColumns);
-        $numberOfIteration = 1;
-        $joinClauses = '';
-        $tableAlias = $tableNames[0].' '.$aliasofTables[0];
-        $joinClauses .= $tableAlias.' ';
-        foreach ($joins as $join) {
-            $joinClauses .= "{$join['join_type']} JOIN {$tableNames[$numberOfIteration]} {$aliasofTables[$numberOfIteration]}";
-            // Use aliases for the ON clause
-            $leftAlias = $aliasofTables[0];
-            $rightAlias = $aliasofTables[$numberOfIteration];
-            $onCommand = $join['join_type'] !== 'cross' ? " ON {$leftAlias}.{$join['left_column']} = {$rightAlias}.{$join['right_column']}" : '';
-            $joinClauses .= $onCommand;
-            $numberOfIteration++;
-        }
-
-        return "SELECT $selectColumns FROM $joinClauses";
+        return sprintf(
+            'SELECT %s FROM %s',
+            $this->buildSelectClause(),
+            $this->buildJoinClause()
+        );
     }
 
-    protected function duplicateKeys(array $data): array
+    /**
+     * Reset builder state for fresh build
+     */
+    private function reset(): void
     {
-        $duplicateKeys = [];
-        $encounteredKeys = [];
-        foreach ($data['tables'] as $tables) {
-            foreach ($tables as $tablename => $columns) {
+        $this->tables = [];
+        $this->joins = [];
+        $this->columnAliases = [];
+        $this->duplicateColumns = [];
+        $this->tableAliasMap = [];
+    }
+
+    /**
+     * Parse and store report configuration
+     */
+    private function parseConfiguration(array $config): void
+    {
+        $this->tables = $config['tables'] ?? [];
+        $this->joins = $config['joins'] ?? [];
+        $this->detectDuplicateColumns();
+        $this->generateTableAliases();
+    }
+
+    /**
+     * Build SELECT clause with proper column aliases
+     * Matches original logic: only alias if column is in duplicate list AND hasn't been added yet
+     */
+    private function buildSelectClause(): string
+    {
+        $selectColumns = [];
+        $addedColumns = []; // Track what we've already added per table
+
+        foreach ($this->tables as $index => $tableGroup) {
+            foreach ($tableGroup as $tableName => $columns) {
+                $alias = $this->tableAliasMap[$index];
+
+                // Initialize tracking for this table
+                if (! isset($addedColumns[$tableName])) {
+                    $addedColumns[$tableName] = [];
+                }
+
                 foreach ($columns as $column) {
-                    if (in_array($column, $encounteredKeys)) {
-                        $duplicateKeys[] = $column;
+                    // Skip if we've already added this column for this table
+                    if (in_array($column, $addedColumns[$tableName])) {
+                        continue;
+                    }
+
+                    // Add to tracking
+                    $addedColumns[$tableName][] = $column;
+
+                    // Add column with alias if it's a duplicate across tables
+                    if (in_array($column, $this->duplicateColumns)) {
+                        $selectColumns[] = "{$alias}.{$column} as {$tableName}_{$column}";
                     } else {
-                        $encounteredKeys[] = $column;
+                        $selectColumns[] = "{$tableName}.{$column}";
                     }
                 }
             }
         }
 
-        return $duplicateKeys;
+        return implode(', ', $selectColumns);
+    }
+
+    /**
+     * Build JOIN clause with proper table aliases
+     */
+    private function buildJoinClause(): string
+    {
+        $firstTable = $this->getFirstTableName();
+        $firstAlias = $this->tableAliasMap[0];
+
+        $joinClause = "{$firstTable} {$firstAlias}";
+
+        foreach ($this->joins as $index => $join) {
+            $tableIndex = $index + 1;
+            $rightAlias = $this->tableAliasMap[$tableIndex];
+            $rightTable = $this->getTableNameByIndex($tableIndex);
+
+            $joinClause .= " {$join['join_type']} JOIN {$rightTable} {$rightAlias}";
+
+            // Add ON condition for non-cross joins
+            if (strtolower($join['join_type']) !== 'cross') {
+                $joinClause .= " ON {$join['left_table']}.{$join['left_column']} = {$join['right_table']}.{$join['right_column']}";
+            }
+        }
+
+        return $joinClause;
+    }
+
+    /**
+     * Detect columns that appear in multiple tables
+     * Only marks as duplicate if found AFTER first occurrence
+     */
+    private function detectDuplicateColumns(): void
+    {
+        $encounteredColumns = [];
+        $duplicates = [];
+
+        foreach ($this->tables as $tableGroup) {
+            foreach ($tableGroup as $tableName => $columns) {
+                foreach ($columns as $column) {
+                    if (in_array($column, $encounteredColumns)) {
+                        // Only add to duplicates if not already there
+                        if (! in_array($column, $duplicates)) {
+                            $duplicates[] = $column;
+                        }
+                    } else {
+                        $encounteredColumns[] = $column;
+                    }
+                }
+            }
+        }
+
+        $this->duplicateColumns = $duplicates;
+    }
+
+    /**
+     * Generate unique aliases for tables (handling same table used multiple times)
+     * Matches original logic: concatenate table name N times where N is occurrence count
+     */
+    private function generateTableAliases(): void
+    {
+        $tableOccurrences = [];
+
+        foreach ($this->tables as $index => $tableGroup) {
+            foreach ($tableGroup as $tableName => $columns) {
+                // Initialize or increment count
+                if (! isset($tableOccurrences[$tableName])) {
+                    $tableOccurrences[$tableName] = 1;
+                } else {
+                    $tableOccurrences[$tableName]++;
+                }
+
+                // Build alias by concatenating table name N times
+                $alias = '';
+                for ($i = 0; $i < $tableOccurrences[$tableName]; $i++) {
+                    $alias .= $tableName;
+                }
+
+                $this->tableAliasMap[$index] = $alias;
+            }
+        }
+    }
+
+    /**
+     * Get the first table name from configuration
+     */
+    private function getFirstTableName(): string
+    {
+        $firstTableGroup = reset($this->tables);
+
+        return array_key_first($firstTableGroup);
+    }
+
+    /**
+     * Get table name by its index in the tables array
+     */
+    private function getTableNameByIndex(int $index): string
+    {
+        $tableGroup = $this->tables[$index];
+
+        return array_key_first($tableGroup);
     }
 }
